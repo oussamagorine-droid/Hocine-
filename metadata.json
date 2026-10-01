@@ -1,0 +1,6 @@
+{
+  "name": "نظام نقاط البيع وإدارة المواد الغذائية POS",
+  "description": "برنامج سطح مكتب متكامل لإدارة محل بيع المواد الغذائية ونقاط البيع POS، البيع بالميزان، المخزون، المشتريات، الديون، الأرباح، التنبيهات والنسخ الاحتياطي",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
