@@ -18,6 +18,9 @@ export interface Product {
   notes?: string;
   isScaleItem: boolean; // True if sold by weight (kg/g)
   image?: string;
+  boxSize?: number; // Number of items in carton/box (e.g. 30 for eggs, 6 for drinks)
+  pieceCostPrice?: number; // Custom piece cost price
+  pieceSellingPrice?: number; // Custom piece selling price
   createdAt: string;
   updatedAt: string;
 }
@@ -183,14 +186,26 @@ export interface StockMovement {
 export type UserRole = 'admin' | 'cashier' | 'employee';
 
 export interface UserPermissions {
-  canViewProfits: boolean;
-  canDeleteSales: boolean;
-  canManageUsers: boolean;
-  canManagePurchases: boolean;
-  canManageExpenses: boolean;
-  canManageSettings: boolean;
-  canApplyDiscount: boolean;
-  canManageProducts: boolean;
+  // شاشات العرض في القائمة الجانبية (ما يظهر للعامل)
+  canAccessPos: boolean; // نقطة البيع والكاشير POS
+  canAccessDashboard: boolean; // لوحة التحكم والإحصائيات
+  canAccessScale: boolean; // البيع بالميزان السريع والأوزان
+  canManageProducts: boolean; // إدارة المنتجات والمخزون
+  canManagePurchases: boolean; // فواتير المشتريات والتوريد
+  canAccessDebts: boolean; // سجل الديون والكريدي
+  canAccessCustomers: boolean; // سجل الزبائن
+  canAccessSuppliers: boolean; // سجل الموردين
+  canManageExpenses: boolean; // تسجيل وإدارة المصاريف اليومية
+  canViewProfits: boolean; // شاشة الأرباح والخسائر P&L ورؤية أسعار التكلفة
+  canAccessStagnantExpiry: boolean; // المنتجات الراكدة والصلاحية
+  canAccessInvoices: boolean; // أرشيف فواتير البيع والمبيعات
+  canAccessReports: boolean; // التقارير الشاملة والتحليلات
+  canManageUsers: boolean; // إدارة المستخدمين والصلاحيات
+  canManageSettings: boolean; // إعدادات المتجر وتحديث البرنامج
+
+  // الصلاحيات والعمليات الحساسة
+  canDeleteSales: boolean; // إمكانية إلغاء وحذف فواتير البيع
+  canApplyDiscount: boolean; // إمكانية تطبيق تخفيض في الفاتورة
 }
 
 export interface AppUser {

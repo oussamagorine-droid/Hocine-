@@ -35,10 +35,8 @@ import { exportProductsToExcel, generateStoreTemplateExcel } from '../utils/exce
 import {
   getSmartProductImage,
   generateOfflineProductSvg,
+  ensureImageAsBase64,
 } from '../utils/productImageUtils';
-import { searchProductImagesOnline, searchSmartProductsOnline, WebImageResult } from '../utils/onlineImageSearch';
-import { ImagePickerModal } from './ImagePickerModal';
-import { SmartProductSearchModal } from './SmartProductSearchModal';
 
 export const ProductsView: React.FC = () => {
   const { settings, triggerRefresh, refreshTrigger, currentUser, setActiveTab } = useApp();
@@ -53,10 +51,6 @@ export const ProductsView: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('الكل');
   const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out' | 'scale' | 'expired'>('all');
-
-  // Smart Search Modal State
-  const [isSmartSearchModalOpen, setIsSmartSearchModalOpen] = useState<boolean>(false);
-  const [isAutoFillingGoogle, setIsAutoFillingGoogle] = useState<boolean>(false);
 
   // Add / Edit Modal State
   const [isFormModalOpen, setIsFormModalOpen] = useState<boolean>(false);
@@ -75,77 +69,23 @@ export const ProductsView: React.FC = () => {
   const [formSupplierId, setFormSupplierId] = useState<number | undefined>(undefined);
   const [formIsScaleItem, setFormIsScaleItem] = useState<boolean>(false);
   const [formNotes, setFormNotes] = useState<string>('');
+  const [formBoxSize, setFormBoxSize] = useState<number>(30);
+  const [formPieceSellingPrice, setFormPieceSellingPrice] = useState<number>(0);
+  const [formPieceCostPrice, setFormPieceCostPrice] = useState<number>(0);
+  const [useCustomPiecePrice, setUseCustomPiecePrice] = useState<boolean>(false);
   const [formImage, setFormImage] = useState<string>('');
-  const [onlineImageResults, setOnlineImageResults] = useState<WebImageResult[]>([]);
-  const [isSearchingOnline, setIsSearchingOnline] = useState<boolean>(false);
-  const [isImagePickerModalOpen, setIsImagePickerModalOpen] = useState<boolean>(false);
 
-  // Auto-fill form fields using Google Smart Product Search
-  const handleAutoFillWithGoogle = async () => {
-    const q = formName.trim();
-    if (!q || q.length < 2) {
-      alert('يرجى كتابة اسم المنتج أولاً للبحث التلقائي في Google');
-      return;
-    }
-
-    setIsAutoFillingGoogle(true);
-    try {
-      const response = await searchSmartProductsOnline(q);
-      if (response.results && response.results.length > 0) {
-        const best = response.results[0];
-        setFormName(best.name);
-        if (best.category) setFormCategory(best.category);
-        if (best.barcode) setFormBarcode(best.barcode);
-        if (best.unit) setFormUnit(best.unit as UnitType);
-        if (best.costPrice) setFormCostPrice(best.costPrice);
-        if (best.sellingPrice) setFormSellingPrice(best.sellingPrice);
-        if (best.imageUrl) setFormImage(best.imageUrl);
-        if (best.isScaleItem !== undefined) setFormIsScaleItem(best.isScaleItem);
-        if (best.description) setFormNotes(best.description);
-
-        // Also fetch images list
-        const imgs = await searchProductImagesOnline(best.name, best.category);
-        setOnlineImageResults(imgs);
-      } else if (response.warning) {
-        alert(response.warning);
-      } else {
-        alert(`لم يتم العثور على معلومات دقيقة لـ "${q}"، يمكنك إدخال البيانات يدوياً`);
-      }
-    } catch (err) {
-      console.error('Auto fill error:', err);
-    } finally {
-      setIsAutoFillingGoogle(false);
-    }
-  };
-
-  // Search internet for product images when typing name (with debounce)
+  // Auto-set matching high-quality local library image when typing product name
   useEffect(() => {
     if (!isFormModalOpen) return;
     const q = formName.trim();
-    if (!q || q.length < 2) {
-      setOnlineImageResults([]);
-      setIsSearchingOnline(false);
-      return;
+    if (!q || q.length < 2) return;
+
+    if (!editingProduct && (!formImage || formImage.startsWith('data:image/svg'))) {
+      const smartImg = getSmartProductImage(q, formCategory);
+      setFormImage(smartImg);
     }
-
-    setIsSearchingOnline(true);
-    const timer = setTimeout(async () => {
-      try {
-        const results = await searchProductImagesOnline(q, formCategory);
-        setOnlineImageResults(results);
-        // Automatically select the first internet search result if image isn't explicitly customized
-        if (results.length > 0 && (!formImage || formImage.startsWith('data:image/svg') || !editingProduct)) {
-          setFormImage(results[0].url);
-        }
-      } catch (e) {
-        console.error('Online image search error:', e);
-      } finally {
-        setIsSearchingOnline(false);
-      }
-    }, 400);
-
-    return () => clearTimeout(timer);
-  }, [formName, formCategory, isFormModalOpen]);
+  }, [formName, formCategory, isFormModalOpen, editingProduct]);
 
   // Update product name in form
   const handleFormNameChange = (name: string) => {
@@ -195,6 +135,10 @@ export const ProductsView: React.FC = () => {
     setFormCategory(defaultCat);
     setFormBarcode(generateBarcode());
     setFormUnit('piece');
+    setFormBoxSize(30);
+    setFormPieceSellingPrice(0);
+    setFormPieceCostPrice(0);
+    setUseCustomPiecePrice(false);
     setFormStockQuantity(10);
     setFormMinStockAlert(5);
     setFormCostPrice(100);
@@ -204,7 +148,6 @@ export const ProductsView: React.FC = () => {
     setFormIsScaleItem(false);
     setFormNotes('');
     setFormImage('');
-    setOnlineImageResults([]);
     setIsFormModalOpen(true);
   };
 
@@ -215,6 +158,10 @@ export const ProductsView: React.FC = () => {
     setFormCategory(p.category);
     setFormBarcode(p.barcode);
     setFormUnit(p.unit);
+    setFormBoxSize(p.boxSize || 30);
+    setFormPieceSellingPrice(p.pieceSellingPrice || 0);
+    setFormPieceCostPrice(p.pieceCostPrice || 0);
+    setUseCustomPiecePrice(!!p.pieceSellingPrice);
     setFormStockQuantity(p.stockQuantity);
     setFormMinStockAlert(p.minStockAlert);
     setFormCostPrice(p.costPrice);
@@ -225,7 +172,6 @@ export const ProductsView: React.FC = () => {
     setFormNotes(p.notes || '');
     const currentImg = p.image || getSmartProductImage(p.name, p.category);
     setFormImage(currentImg);
-    setOnlineImageResults([]);
     setIsFormModalOpen(true);
   };
 
@@ -256,13 +202,17 @@ export const ProductsView: React.FC = () => {
     const profitMargin =
       formCostPrice > 0 ? ((formSellingPrice - formCostPrice) / formCostPrice) * 100 : 0;
 
-    const resolvedImage = formImage.trim() || getSmartProductImage(formName.trim(), formCategory);
+    const rawImage = formImage.trim() || getSmartProductImage(formName.trim(), formCategory);
+    const resolvedImage = await ensureImageAsBase64(rawImage);
 
     const payload: Omit<Product, 'id'> = {
       name: formName.trim(),
       category: formCategory,
       barcode: formBarcode.trim(),
       unit: formIsScaleItem ? 'kg' : formUnit,
+      boxSize: formUnit === 'carton' || formUnit === 'box' ? formBoxSize : undefined,
+      pieceCostPrice: (formUnit === 'carton' || formUnit === 'box') && useCustomPiecePrice ? formPieceCostPrice : undefined,
+      pieceSellingPrice: (formUnit === 'carton' || formUnit === 'box') && useCustomPiecePrice ? formPieceSellingPrice : undefined,
       stockQuantity: formStockQuantity,
       minStockAlert: formMinStockAlert,
       costPrice: formCostPrice,
@@ -490,22 +440,6 @@ export const ProductsView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Smart Google Product Search Button */}
-          <button
-            type="button"
-            onClick={() => setIsSmartSearchModalOpen(true)}
-            title="البحث الذكي في سلع السوبرماركت الجزائرية عبر Google Search API"
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-800 text-white text-xs font-bold shadow-md transition-all active:scale-95"
-          >
-            <div className="flex items-center gap-0.5 bg-white/20 px-1.5 py-0.5 rounded-md">
-              <span className="w-2 h-2 rounded-full bg-blue-300 inline-block"></span>
-              <span className="w-2 h-2 rounded-full bg-red-400 inline-block"></span>
-              <span className="w-2 h-2 rounded-full bg-amber-300 inline-block"></span>
-              <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span>
-            </div>
-            <span>البحث الذكي في سلع السوبرماركت (Google 🇩🇿)</span>
-          </button>
-
           <button
             type="button"
             onClick={() => setActiveTab('excel')}
@@ -638,7 +572,13 @@ export const ProductsView: React.FC = () => {
                             className="w-full h-full object-cover"
                             loading="lazy"
                             onError={(e) => {
-                              (e.target as HTMLImageElement).src = generateOfflineProductSvg(p.name, p.category);
+                              const target = e.target as HTMLImageElement;
+                              const smart = getSmartProductImage(p.name, p.category);
+                              if (target.src !== smart) {
+                                target.src = smart;
+                              } else {
+                                target.src = generateOfflineProductSvg(p.name, p.category);
+                              }
                             }}
                           />
                         </div>
@@ -779,242 +719,79 @@ export const ProductsView: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* Product Name */}
                 <div className="sm:col-span-2">
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="font-bold text-gray-700 block">اسم المنتج *</label>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={handleAutoFillWithGoogle}
-                        disabled={isAutoFillingGoogle || !formName.trim()}
-                        className="text-[11px] bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold px-3 py-1 rounded-lg flex items-center gap-1.5 shadow-2xs transition-all active:scale-95 disabled:opacity-50"
-                        title="البحث الذكي وتعبئة الباركود، الصنف، السعر والصورة تلقائياً من Google"
-                      >
-                        {isAutoFillingGoogle ? (
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                        ) : (
-                          <Sparkles className="w-3 h-3 text-amber-300" />
-                        )}
-                        <span>تعبئة ذكية وتلقائية عبر Google ⚡</span>
-                      </button>
-                      <span className="text-[11px] text-blue-600 font-bold hidden sm:flex items-center gap-1">
-                        <Globe className="w-3.5 h-3.5 text-blue-600" />
-                        <span>Google Search API 🌐</span>
-                      </span>
-                    </div>
-                  </div>
-                  <div className="relative flex items-center">
-                    <input
-                      type="text"
-                      required
-                      value={formName}
-                      onChange={(e) => handleFormNameChange(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          // Force immediate internet search
-                          if (formName.trim().length >= 2) {
-                            setIsSearchingOnline(true);
-                            searchProductImagesOnline(formName.trim(), formCategory).then((res) => {
-                              setOnlineImageResults(res);
-                              setIsSearchingOnline(false);
-                            });
-                          }
-                        }
-                      }}
-                      placeholder="اكتب اسم المنتج (مثال: إفري 1.5 لتر، كوكاكولا، حليب كانديا، زيت عافية، بسكويت بيمو، قهوة...)"
-                      className="w-full bg-gray-50 border border-gray-300 text-gray-900 rounded-lg pr-3 pl-32 py-2.5 focus:outline-none focus:border-blue-500 font-bold text-sm shadow-2xs"
-                    />
-                    <div className="absolute left-1.5 flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (formName.trim().length >= 2) {
-                            setIsSearchingOnline(true);
-                            searchProductImagesOnline(formName.trim(), formCategory).then((res) => {
-                              setOnlineImageResults(res);
-                              setIsSearchingOnline(false);
-                            });
-                          }
-                        }}
-                        className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs"
-                        title="بحث مباشر في صور Google عن هذا المنتج"
-                      >
-                        {isSearchingOnline ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <div className="flex items-center gap-0.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-blue-300"></span>
-                            <span className="w-1.5 h-1.5 rounded-full bg-red-400"></span>
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-300"></span>
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                          </div>
-                        )}
-                        <span>صور Google</span>
-                      </button>
-                    </div>
-                  </div>
+                  <label className="font-bold text-gray-700 mb-1 block">اسم المنتج التجاري *</label>
+                  <input
+                    type="text"
+                    required
+                    value={formName}
+                    onChange={(e) => handleFormNameChange(e.target.value)}
+                    placeholder="اكتب اسم المنتج (مثال: إفري 1.5 لتر، كوكاكولا، حليب كانديا، زيت عافية، بسكويت بيمو، قهوة...)"
+                    className="w-full bg-gray-50 border border-gray-300 text-gray-900 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500 font-bold text-sm shadow-2xs"
+                  />
                 </div>
 
-                {/* Smart Image Internet Search / Selection Panel */}
-                <div className="sm:col-span-2 p-3.5 bg-gradient-to-br from-blue-50/70 via-indigo-50/40 to-slate-50 rounded-xl border border-blue-200/80 space-y-3 shadow-2xs">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
+                {/* Product Image Card (Direct URL & Automatic Preview) */}
+                <div className="sm:col-span-2 p-3.5 bg-slate-50 rounded-xl border border-gray-200 space-y-3 shadow-2xs">
+                  <div className="flex items-center justify-between">
                     <span className="font-bold text-gray-800 flex items-center gap-1.5 text-xs">
-                      <div className="flex items-center gap-0.5">
-                        <span className="w-2 h-2 rounded-full bg-blue-500"></span>
-                        <span className="w-2 h-2 rounded-full bg-red-500"></span>
-                        <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-                        <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                      </div>
-                      <span>صور Google للمنتجات الجزائرية (أغذية وسوبرماركت)</span>
+                      <ImageIcon className="w-4 h-4 text-blue-600" />
+                      <span>صورة المنتج (رابط مباشر وتحميل تلقائي 🖼️)</span>
                     </span>
-
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setIsImagePickerModalOpen(true)}
-                        className="flex items-center gap-1.5 text-[11px] font-bold text-white bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded-lg shadow-2xs transition-all active:scale-95"
-                      >
-                        <Globe className="w-3.5 h-3.5" />
-                        <span>فتح بحث صور Google المباشر 🇩🇿</span>
-                      </button>
-                    </div>
+                    <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                      محفوظة تلقائياً في قاعدة بيانات البرنامج 💾
+                    </span>
                   </div>
 
-                  {/* Active Selected Image Preview & Visual Grid of Internet Results */}
-                  <div className="space-y-2">
-                    <div>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-[11px] font-bold text-gray-700 flex items-center gap-1.5">
-                          <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                          <span>
-                            {isSearchingOnline ? (
-                              <span className="flex items-center gap-1 text-blue-600 animate-pulse">
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                جارٍ البحث في صور Google عن سلع "{formName}" بالجزائر...
-                              </span>
-                            ) : onlineImageResults.length > 0 ? (
-                              <span>نتائج صور Google لسلع "{formName}" ({onlineImageResults.length}):</span>
-                            ) : (
-                              <span>صور المنتجات المستخرجة من Google Images:</span>
-                            )}
-                          </span>
-                        </span>
-                        {onlineImageResults.length > 0 && (
-                          <span className="text-[10px] text-blue-600 font-medium">
-                            انقر على أي صورة لتحديدها للمنتج
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Online Results Stream */}
-                      {isSearchingOnline ? (
-                        <div className="p-4 bg-white/70 rounded-xl border border-blue-100 flex items-center justify-center gap-2 text-blue-600 text-xs font-bold animate-pulse">
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>جارٍ البحث المباشر في صور Google وقواعد البيانات الجزائرية عن "{formName}"...</span>
-                        </div>
-                      ) : onlineImageResults.length > 0 ? (
-                        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-2">
-                          {onlineImageResults.map((res) => {
-                            const isCurrent = formImage === res.url;
-                            return (
-                              <div
-                                key={res.id}
-                                onClick={() => setFormImage(res.url)}
-                                className={`group relative rounded-xl border-2 overflow-hidden cursor-pointer bg-white transition-all hover:shadow-md hover:scale-[1.02] flex flex-col ${
-                                  isCurrent
-                                    ? 'border-blue-600 ring-2 ring-blue-400/40 shadow-sm'
-                                    : 'border-gray-200 hover:border-blue-400'
-                                }`}
-                              >
-                                <div className="relative w-full h-20 sm:h-24 bg-white flex items-center justify-center p-1 border-b border-gray-100 overflow-hidden">
-                                  <img
-                                    src={res.thumbnailUrl || res.url}
-                                    alt={res.title}
-                                    className="w-full h-full object-contain"
-                                    loading="lazy"
-                                    onError={(e) => {
-                                      (e.target as HTMLImageElement).src = generateOfflineProductSvg(res.title, formCategory);
-                                    }}
-                                  />
-                                  <span className="absolute top-1 right-1 text-[8px] bg-black/75 text-white px-1 py-0.5 rounded-xs">
-                                    {res.sourceName || 'Google Images 🇩🇿'}
-                                  </span>
-                                  {isCurrent && (
-                                    <div className="absolute top-1 left-1 w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center shadow-xs">
-                                      <Check className="w-3 h-3" />
-                                    </div>
-                                  )}
-                                </div>
-                                <div className="p-1.5 text-right bg-white flex-1 flex flex-col justify-between">
-                                  <p className="font-bold text-[10px] text-gray-800 line-clamp-1 leading-tight group-hover:text-blue-600">
-                                    {res.title}
-                                  </p>
-                                  <span className={`text-[9px] font-bold mt-0.5 ${isCurrent ? 'text-blue-600' : 'text-gray-400'}`}>
-                                    {isCurrent ? '✓ محددة' : 'اختيار الصورة'}
-                                  </span>
-                                </div>
-                              </div>
-                            );
-                          })}
-
-                          {/* Offline SVG Vector Card Option */}
-                          <div
-                            onClick={() => setFormImage(generateOfflineProductSvg(formName || 'منتج', formCategory))}
-                            className={`group relative rounded-xl border-2 overflow-hidden cursor-pointer bg-white transition-all hover:shadow-md hover:scale-[1.02] flex flex-col ${
-                              formImage.startsWith('data:image/svg')
-                                ? 'border-amber-500 ring-2 ring-amber-400/40 shadow-sm'
-                                : 'border-gray-200 hover:border-amber-400'
-                            }`}
-                          >
-                            <div className="relative w-full h-20 sm:h-24 bg-amber-50 flex items-center justify-center overflow-hidden">
-                              <span className="text-2xl">🎨</span>
-                              {formImage.startsWith('data:image/svg') && (
-                                <div className="absolute top-1 left-1 w-5 h-5 rounded-full bg-amber-600 text-white flex items-center justify-center shadow-xs">
-                                  <Check className="w-3 h-3" />
-                                </div>
-                              )}
-                            </div>
-                            <div className="p-1.5 text-right bg-white flex-1 flex flex-col justify-between">
-                              <p className="font-bold text-[10px] text-gray-800 line-clamp-1 leading-tight">
-                                شارة بدون إنترنت
-                              </p>
-                              <span className="text-[9px] text-amber-600 font-bold mt-0.5">
-                                {formImage.startsWith('data:image/svg') ? '✓ محددة' : 'شارة رمزية'}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
+                  <div className="flex flex-col sm:flex-row items-center gap-3">
+                    {/* Live Image Preview Container */}
+                    <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-xl border-2 border-dashed border-gray-300 bg-white p-1.5 flex items-center justify-center shrink-0 overflow-hidden shadow-2xs relative group">
+                      {formImage ? (
+                        <img
+                          src={formImage}
+                          alt={formName || 'معاينة الصورة'}
+                          className="w-full h-full object-contain"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = generateOfflineProductSvg(formName || 'منتج', formCategory);
+                          }}
+                        />
                       ) : (
-                        <div className="p-4 bg-white rounded-xl border border-dashed border-gray-300 text-center space-y-1">
-                          <p className="text-xs text-gray-600 font-bold">
-                            {formName.trim().length >= 2
-                              ? `اضغط زر "صور Google" أعلاه لجلب صور "${formName}" من الإنترنت فوراً`
-                              : 'اكتب اسم المنتج ثم اضغط زر "صور Google" لجلب صوره الحقيقية من الإنترنت'}
-                          </p>
-                          <p className="text-[11px] text-gray-400">
-                            بحث ذكي في صور Google مخصص للسوبرماركت والسلع الجزائرية مع استبعاد أي عقارات أو عناصر غير غذائية
-                          </p>
+                        <div className="flex flex-col items-center justify-center text-gray-400 text-center p-1">
+                          <ImageIcon className="w-7 h-7 mb-1 stroke-1" />
+                          <span className="text-[9px] font-bold">بدون صورة</span>
                         </div>
                       )}
                     </div>
 
-                    {/* Custom URL or direct paste input */}
-                    <div className="pt-1.5 border-t border-blue-100 flex items-center gap-2">
+                    {/* URL Input & Quick Actions */}
+                    <div className="flex-1 space-y-2 w-full">
+                      <label className="text-xs font-bold text-gray-800 block">رابط صورة المنتج (URL):</label>
                       <input
                         type="text"
                         value={formImage}
                         onChange={(e) => setFormImage(e.target.value)}
-                        placeholder="أو الصق رابط صورة مخصص (URL) من الويب..."
-                        className="flex-1 bg-white border border-gray-300 text-gray-800 text-[11px] rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-blue-500"
+                        placeholder="الصق رابط الصورة المباشر هنا (https://example.com/image.jpg)..."
+                        className="w-full bg-white border border-gray-300 text-gray-900 text-xs rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500 font-mono shadow-2xs"
                       />
-                      <button
-                        type="button"
-                        onClick={() => setIsImagePickerModalOpen(true)}
-                        className="flex items-center gap-1 shrink-0 text-[11px] font-bold px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-2xs transition-colors"
-                      >
-                        <Globe className="w-3.5 h-3.5" />
-                        <span>البحث في الإنترنت 🌐</span>
-                      </button>
+                      <div className="flex items-center gap-2 flex-wrap text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => setFormImage(generateOfflineProductSvg(formName || 'منتج', formCategory))}
+                          className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-md font-bold transition-all active:scale-95"
+                          title="توليد شارة متجهة مخصصة بدون إنترنت"
+                        >
+                          🎨 شارة رمزية تلقائية
+                        </button>
+                        {formImage && (
+                          <button
+                            type="button"
+                            onClick={() => setFormImage('')}
+                            className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-md font-bold transition-all active:scale-95"
+                          >
+                            ✕ مسح الرابط
+                          </button>
+                        )}
+                        <span className="text-gray-500 text-[10px]">تُحمل الصورة فوراً وتُحفظ دائماً مع المنتج</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1091,10 +868,94 @@ export const ProductsView: React.FC = () => {
                       <option value="piece">قطعة فردية (Piece)</option>
                       <option value="pack">علبة / باكي (Pack)</option>
                       <option value="box">صندوق / كرتون (Box/Carton)</option>
+                      <option value="carton">كرتونة / طبق (Carton)</option>
                       <option value="liter">لتر (Liter)</option>
                       <option value="kg">كيلوغرام (Kg)</option>
                       <option value="g">غرام (Gram)</option>
                     </select>
+                  </div>
+                )}
+
+                {/* Carton / Box Size & Unit Price Calculation */}
+                {(formUnit === 'carton' || formUnit === 'box') && (
+                  <div className="sm:col-span-2 p-4 bg-blue-50 rounded-xl border border-blue-200 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-black text-blue-900 text-xs">📦 إعدادات الكرتونة وثمن الوحدة الفردية (الحبة)</p>
+                        <p className="text-[11px] text-blue-700">حدد عدد الحبات في الكرتونة ويمكنك تفعيل التعديل اليدوي لسعر الحبة</p>
+                      </div>
+                      <div className="w-32">
+                        <label className="text-[10px] font-bold text-blue-800 block mb-1">عدد الحبات في الكرتونة:</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={formBoxSize}
+                          onChange={(e) => setFormBoxSize(parseInt(e.target.value) || 30)}
+                          className="w-full bg-white border border-blue-300 text-blue-900 font-mono font-bold rounded-lg px-2.5 py-1 text-center text-xs focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-2 border-t border-blue-200">
+                      <span className="text-xs font-bold text-blue-900">تعديل سعر بيع وشراء الحبة يدوياً؟</span>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={useCustomPiecePrice}
+                          onChange={(e) => {
+                            setUseCustomPiecePrice(e.target.checked);
+                            if (e.target.checked && formPieceSellingPrice === 0) {
+                              setFormPieceSellingPrice(Math.round((formSellingPrice / formBoxSize) * 100) / 100);
+                              setFormPieceCostPrice(Math.round((formCostPrice / formBoxSize) * 100) / 100);
+                            }
+                          }}
+                          className="sr-only peer"
+                        />
+                        <div className="w-9 h-5 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:right-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                      </label>
+                    </div>
+
+                    {useCustomPiecePrice ? (
+                      <div className="grid grid-cols-2 gap-3 pt-2">
+                        <div>
+                          <label className="text-[10px] font-bold text-gray-700 block mb-1">سعر شراء الحبة (يدوي):</label>
+                          <input
+                            type="number"
+                            step="any"
+                            min="0"
+                            value={formPieceCostPrice}
+                            onChange={(e) => setFormPieceCostPrice(parseFloat(e.target.value) || 0)}
+                            className="w-full bg-white border border-gray-300 text-gray-900 font-mono font-bold rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-emerald-700 block mb-1">سعر بيع الحبة (يدوي):</label>
+                          <input
+                            type="number"
+                            step="any"
+                            min="0"
+                            value={formPieceSellingPrice}
+                            onChange={(e) => setFormPieceSellingPrice(parseFloat(e.target.value) || 0)}
+                            className="w-full bg-white border border-emerald-300 text-emerald-800 font-mono font-black rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-emerald-500"
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-3 pt-2 text-xs">
+                        <div className="bg-white p-2.5 rounded-lg border border-blue-100 shadow-2xs">
+                          <span className="text-gray-500 block text-[10px]">🛒 ثمن شراء الحبة (تلقائي):</span>
+                          <span className="font-mono font-bold text-gray-900 text-sm">
+                            {formatCurrency(formBoxSize > 0 ? formCostPrice / formBoxSize : 0, currency)}
+                          </span>
+                        </div>
+                        <div className="bg-white p-2.5 rounded-lg border border-emerald-100 shadow-2xs">
+                          <span className="text-emerald-700 block text-[10px]">🏷️ ثمن بيع الحبة (تلقائي):</span>
+                          <span className="font-mono font-black text-emerald-800 text-sm">
+                            {formatCurrency(formBoxSize > 0 ? formSellingPrice / formBoxSize : 0, currency)}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1426,27 +1287,6 @@ export const ProductsView: React.FC = () => {
           </div>
         </div>
       )}
-      {/* Full Image Gallery Picker Modal */}
-      <ImagePickerModal
-        isOpen={isImagePickerModalOpen}
-        onClose={() => setIsImagePickerModalOpen(false)}
-        productName={formName}
-        category={formCategory}
-        currentImage={formImage}
-        onSelectImage={(url) => {
-          setFormImage(url);
-          setIsImagePickerModalOpen(false);
-        }}
-      />
-
-      {/* Smart Product Search Modal via Google Search API */}
-      <SmartProductSearchModal
-        isOpen={isSmartSearchModalOpen}
-        onClose={() => setIsSmartSearchModalOpen(false)}
-        onProductAdded={(newProduct) => {
-          // Trigger refresh is already called inside modal
-        }}
-      />
     </div>
   );
 };

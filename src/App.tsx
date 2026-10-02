@@ -12,7 +12,6 @@ import { CustomersSuppliersView } from './components/CustomersSuppliersView';
 import { ReportsView } from './components/ReportsView';
 import { UsersView } from './components/UsersView';
 import { SettingsView } from './components/SettingsView';
-import { ExcelManagerView } from './components/ExcelManagerView';
 import { ProfitLossView } from './components/ProfitLossView';
 import { ExpensesView } from './components/ExpensesView';
 import { InvoicesArchiveView } from './components/InvoicesArchiveView';
@@ -20,6 +19,7 @@ import { StagnantExpiryView } from './components/StagnantExpiryView';
 import { AlertsModal } from './components/AlertsModal';
 import { LockScreen } from './components/LockScreen';
 import { ShieldAlert, Lock, ShoppingCart } from 'lucide-react';
+import { UserPermissions } from './types';
 
 const RestrictedAccessView: React.FC<{
   title: string;
@@ -80,16 +80,16 @@ const MainLayout: React.FC = () => {
         return;
       }
 
-      // Map F1 to F10 to views
-      const keyMap: Record<string, { tab: string; permission?: string }> = {
-        F1: { tab: 'pos' },
-        F2: { tab: 'dashboard' },
-        F3: { tab: 'scale' },
+      // Map F1 to F10 to views with permissions
+      const keyMap: Record<string, { tab: string; permission?: keyof UserPermissions }> = {
+        F1: { tab: 'pos', permission: 'canAccessPos' },
+        F2: { tab: 'dashboard', permission: 'canAccessDashboard' },
+        F3: { tab: 'scale', permission: 'canAccessScale' },
         F4: { tab: 'products', permission: 'canManageProducts' },
         F5: { tab: 'purchases', permission: 'canManagePurchases' },
-        F6: { tab: 'debts' },
-        F7: { tab: 'customers' },
-        F8: { tab: 'suppliers' },
+        F6: { tab: 'debts', permission: 'canAccessDebts' },
+        F7: { tab: 'customers', permission: 'canAccessCustomers' },
+        F8: { tab: 'suppliers', permission: 'canAccessSuppliers' },
         F9: { tab: 'expenses', permission: 'canManageExpenses' },
         F10: { tab: 'profit_loss', permission: 'canViewProfits' },
       };
@@ -101,7 +101,7 @@ const MainLayout: React.FC = () => {
           currentUser &&
           currentUser.role !== 'admin' &&
           match.permission &&
-          !currentUser.permissions[match.permission as keyof typeof currentUser.permissions]
+          !currentUser.permissions[match.permission]
         ) {
           return;
         }
@@ -126,35 +126,48 @@ const MainLayout: React.FC = () => {
   const isAdmin = currentUser?.role === 'admin';
   const permissions = currentUser?.permissions;
 
-  // Render view with permissions checks
+  // Render view with strict permissions checks
   const renderCurrentView = () => {
     switch (activeTab) {
       case 'dashboard':
+        if (!isAdmin && !permissions?.canAccessDashboard) {
+          return <RestrictedAccessView title="لوحة التحكم والإحصائيات" requiredPermission="الاطلاع على لوحة التحكم" />;
+        }
         return <DashboardView />;
       case 'pos':
+        if (!isAdmin && permissions?.canAccessPos === false) {
+          return <RestrictedAccessView title="نقطة البيع والكاشير" requiredPermission="استخدام نقطة البيع" />;
+        }
         return <POSView />;
       case 'scale':
+        if (!isAdmin && !permissions?.canAccessScale) {
+          return <RestrictedAccessView title="البيع بالميزان والأوزان" requiredPermission="البيع بالميزان" />;
+        }
         return <ScaleView />;
       case 'products':
         if (!isAdmin && !permissions?.canManageProducts) {
           return <RestrictedAccessView title="إدارة المنتجات والمخزون" requiredPermission="إدارة المنتجات والمخزون" />;
         }
         return <ProductsView />;
-      case 'excel':
-        if (!isAdmin && !permissions?.canManageProducts) {
-          return <RestrictedAccessView title="تكامل قاعدة Excel" requiredPermission="إدارة المنتجات والمخزون" />;
-        }
-        return <ExcelManagerView />;
       case 'purchases':
         if (!isAdmin && !permissions?.canManagePurchases) {
           return <RestrictedAccessView title="فواتير المشتريات والتوريد" requiredPermission="إدارة المشتريات والتوريد" />;
         }
         return <PurchasesView />;
       case 'debts':
+        if (!isAdmin && !permissions?.canAccessDebts) {
+          return <RestrictedAccessView title="سجل الديون والكريدي" requiredPermission="الاطلاع على سجل الديون" />;
+        }
         return <DebtsView />;
       case 'customers':
+        if (!isAdmin && !permissions?.canAccessCustomers) {
+          return <RestrictedAccessView title="سجل الزبائن" requiredPermission="الاطلاع على سجل الزبائن" />;
+        }
         return <CustomersSuppliersView initialTab="customers" />;
       case 'suppliers':
+        if (!isAdmin && !permissions?.canAccessSuppliers) {
+          return <RestrictedAccessView title="سجل الموردين" requiredPermission="الاطلاع على سجل الموردين" />;
+        }
         return <CustomersSuppliersView initialTab="suppliers" />;
       case 'expenses':
         if (!isAdmin && !permissions?.canManageExpenses) {
@@ -167,10 +180,19 @@ const MainLayout: React.FC = () => {
         }
         return <ProfitLossView />;
       case 'stagnant_expiry':
+        if (!isAdmin && !permissions?.canAccessStagnantExpiry) {
+          return <RestrictedAccessView title="المنتجات الراكدة والصلاحية" requiredPermission="مراقبة الصلاحية والركود" />;
+        }
         return <StagnantExpiryView />;
       case 'invoices':
+        if (!isAdmin && !permissions?.canAccessInvoices) {
+          return <RestrictedAccessView title="أرشيف الفواتير والمبيعات" requiredPermission="الاطلاع على أرشيف الفواتير" />;
+        }
         return <InvoicesArchiveView />;
       case 'reports':
+        if (!isAdmin && !permissions?.canAccessReports) {
+          return <RestrictedAccessView title="التقارير الشاملة والتحليلات" requiredPermission="الاطلاع على التقارير الشاملة" />;
+        }
         return <ReportsView />;
       case 'users':
         if (!isAdmin && !permissions?.canManageUsers) {
@@ -183,7 +205,7 @@ const MainLayout: React.FC = () => {
         }
         return <SettingsView />;
       default:
-        return <DashboardView />;
+        return <POSView />;
     }
   };
 
@@ -209,26 +231,25 @@ const MainLayout: React.FC = () => {
         <LockScreen />
 
         {/* Technical Status Bar Footer */}
-        <footer className="h-9 bg-white border-t border-gray-200 px-6 flex items-center justify-between text-[11px] text-gray-500 font-bold select-none shrink-0 no-print">
-          <div className="flex items-center gap-4">
-            <span className="flex items-center gap-1.5">
+        <footer className="h-9 bg-white border-t border-gray-200 px-4 sm:px-6 flex items-center justify-between text-[11px] text-gray-600 font-bold select-none shrink-0 no-print">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="flex items-center gap-1.5 shrink-0">
               <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)]"></span>
-              <span className="text-gray-700 font-mono">قاعدة البيانات: INDEXEDDB_LOCAL</span>
+              <span className="text-gray-700 font-mono hidden sm:inline">النظام متصل</span>
+            </span>
+            <span className="text-gray-300 hidden sm:inline">|</span>
+            <span className="truncate">المستخدم: <strong className="text-blue-700">{currentUser?.fullName}</strong></span>
+          </div>
+
+          <div className="flex items-center gap-2 sm:gap-4 shrink-0 font-bold">
+            <span className="text-gray-800 bg-gray-100 px-2.5 py-0.5 rounded-md border border-gray-200">
+              📞 دعم فني: <a href="tel:0781355917" className="text-blue-600 hover:underline font-mono" dir="ltr">0781355917</a>
             </span>
             <span className="text-gray-300">|</span>
-            <span>المستخدم: <strong className="text-blue-700">{currentUser?.fullName}</strong> ({currentUser?.role === 'admin' ? 'مدير' : currentUser?.role === 'employee' ? 'مشرف' : 'كاشير'})</span>
-          </div>
-          <div className="hidden md:flex items-center gap-5 text-gray-600 font-mono text-[10px]">
-            <span>F1: كاشير</span>
-            <span>F2: الرئيسية</span>
-            <span>F3: ميزان</span>
-            <span>F4: مخزون</span>
-            <span>F5: مشتريات</span>
-            <span>F6: ديون</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span>دعم فني: 0550-XX-XX-XX</span>
-            <span className="text-gray-300">|</span>
+            <span className="text-gray-700 hidden md:inline">
+              منشئ وبرمجة البرنامج: <span className="text-purple-700 font-black">Gorine Oussama</span>
+            </span>
+            <span className="text-gray-300 hidden md:inline">|</span>
             <span className="text-blue-600 font-mono font-bold">v2.1.0</span>
           </div>
         </footer>

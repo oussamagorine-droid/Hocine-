@@ -1,13 +1,12 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { db, seedDatabaseIfEmpty } from '../db/db';
 import { AppUser, HeldCart, StoreSettings } from '../types';
-import { defaultSettings, initialUsers } from '../db/seedData';
+import { defaultSettings, initialUsers, DEFAULT_ROLE_PERMISSIONS } from '../db/seedData';
 
 export type NavigationTab =
   | 'dashboard'
   | 'pos'
   | 'products'
-  | 'excel'
   | 'purchases'
   | 'scale'
   | 'debts'
@@ -151,11 +150,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         try {
           const dbUsers = await db.users.toArray();
           if (dbUsers && dbUsers.length > 0 && isMounted) {
-            setUsersList(dbUsers);
+            const normalizedUsers = dbUsers.map((u) => {
+              const baseRole = u.role || 'cashier';
+              return {
+                ...u,
+                permissions: {
+                  ...DEFAULT_ROLE_PERMISSIONS[baseRole],
+                  ...(u.permissions || {}),
+                },
+              };
+            });
+
+            setUsersList(normalizedUsers);
             const savedUserIdStr = localStorage.getItem('grocery_pos_current_user_id');
             const savedUserId = savedUserIdStr ? Number(savedUserIdStr) : null;
-            const savedUser = savedUserId ? dbUsers.find((u) => u.id === savedUserId && u.isActive) : null;
-            const admin = dbUsers.find((u) => u.role === 'admin' && u.isActive) || dbUsers.find((u) => u.isActive) || dbUsers[0];
+            const savedUser = savedUserId ? normalizedUsers.find((u) => u.id === savedUserId && u.isActive) : null;
+            const admin = normalizedUsers.find((u) => u.role === 'admin' && u.isActive) || normalizedUsers.find((u) => u.isActive) || normalizedUsers[0];
             const activeUser = savedUser || admin;
             setCurrentUser(activeUser);
             if (activeUser?.id) {

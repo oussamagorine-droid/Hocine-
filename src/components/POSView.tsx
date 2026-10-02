@@ -20,6 +20,10 @@ import {
   Sparkles,
   ShoppingBag,
   Package,
+  PackagePlus,
+  AlertCircle,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { db, executeSaleTransaction } from '../db/db';
 import { useApp } from '../context/AppContext';
@@ -64,6 +68,19 @@ export const POSView: React.FC = () => {
   // Search & Filter
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('الكل');
+  const [todayTotalSales, setTodayTotalSales] = useState<number>(0);
+
+  useEffect(() => {
+    async function loadTodaySales() {
+      const todayStr = getLocalDateStr();
+      const allSales = await db.sales.toArray();
+      const sum = allSales
+        .filter((s) => s.date.startsWith(todayStr))
+        .reduce((acc, s) => acc + s.totalAmount, 0);
+      setTodayTotalSales(sum);
+    }
+    loadTodaySales();
+  }, [refreshTrigger, cart]);
 
   // Scale Modal State
   const [scaleProduct, setScaleProduct] = useState<Product | null>(null);
@@ -84,6 +101,19 @@ export const POSView: React.FC = () => {
   // Receipt Modal after completed transaction
   const [completedSale, setCompletedSale] = useState<Sale | null>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState<boolean>(false);
+
+  // Quick Add Unknown Product Modal
+  const [isQuickAddModalOpen, setIsQuickAddModalOpen] = useState<boolean>(false);
+  const [quickBarcode, setQuickBarcode] = useState<string>('');
+  const [quickName, setQuickName] = useState<string>('');
+  const [quickCostPrice, setQuickCostPrice] = useState<number>(0);
+  const [quickSellingPrice, setQuickSellingPrice] = useState<number>(0);
+  const [quickCategory, setQuickCategory] = useState<string>('مواد غذائية عامة وبقوليات');
+  const [quickStockQuantity, setQuickStockQuantity] = useState<number>(10);
+  const [quickIsScale, setQuickIsScale] = useState<boolean>(false);
+  const [showQuickCostPrice, setShowQuickCostPrice] = useState<boolean>(false);
+  const [multiUnitProduct, setMultiUnitProduct] = useState<Product | null>(null);
+  const quickNameInputRef = useRef<HTMLInputElement>(null);
 
   // Input refs
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -131,7 +161,8 @@ export const POSView: React.FC = () => {
         !isPaymentModalOpen &&
         !scaleProduct &&
         !isNewCustomerModalOpen &&
-        !isReceiptOpen
+        !isReceiptOpen &&
+        !isQuickAddModalOpen
       ) {
         // If focus is currently in barcode search input and it has text, let the search form handle adding the product first
         if (document.activeElement === searchInputRef.current && searchQuery.trim().length > 0) {
@@ -145,7 +176,7 @@ export const POSView: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [cart, isPaymentModalOpen, scaleProduct, isNewCustomerModalOpen, isReceiptOpen, searchQuery]);
+  }, [cart, isPaymentModalOpen, scaleProduct, isNewCustomerModalOpen, isReceiptOpen, isQuickAddModalOpen, searchQuery]);
 
   // Filtered Products
   const filteredProducts = useMemo(() => {
@@ -178,8 +209,12 @@ export const POSView: React.FC = () => {
     return totalAmount - totalCost;
   }, [totalAmount, totalCost]);
 
-  // Add Packaged product to cart (or increase quantity if already in cart)
+  // Add Packaged product to cart (or prompt if multi-unit carton/box)
   const addPackagedProduct = (product: Product) => {
+    if (product.unit === 'carton' || product.unit === 'box' || product.name.includes('كرتونة') || product.name.includes('طبق')) {
+      setMultiUnitProduct(product);
+      return;
+    }
     playBeep();
     setLastScannedItem({
       name: product.name,
@@ -189,7 +224,7 @@ export const POSView: React.FC = () => {
       isScaleItem: false,
     });
     setCart((prev) => {
-      const existingIdx = prev.findIndex((item) => item.productId === product.id);
+      const existingIdx = prev.findIndex((item) => item.productId === product.id && item.unit === product.unit);
       if (existingIdx >= 0) {
         const updated = [...prev];
         const item = updated[existingIdx];
@@ -217,6 +252,53 @@ export const POSView: React.FC = () => {
             quantity: 1,
             costPrice: product.costPrice,
             unitPrice: product.sellingPrice,
+            discount: 0,
+            total: itemTotal,
+            profit: itemProfit,
+          },
+        ];
+      }
+    });
+  };
+
+  const addProductWithUnit = (product: Product, unitType: 'carton' | 'piece', unitPrice: number, costPrice: number) => {
+    playBeep();
+    setLastScannedItem({
+      name: product.name,
+      price: unitPrice,
+      unit: unitType,
+      quantity: 1,
+      isScaleItem: false,
+    });
+    setCart((prev) => {
+      const existingIdx = prev.findIndex((item) => item.productId === product.id && item.unit === unitType);
+      if (existingIdx >= 0) {
+        const updated = [...prev];
+        const item = updated[existingIdx];
+        const newQty = item.quantity + 1;
+        const newTotal = newQty * item.unitPrice - item.discount;
+        const newProfit = newTotal - newQty * item.costPrice;
+        updated[existingIdx] = {
+          ...item,
+          quantity: newQty,
+          total: Math.round(newTotal * 100) / 100,
+          profit: Math.round(newProfit * 100) / 100,
+        };
+        return updated;
+      } else {
+        const itemTotal = unitPrice;
+        const itemProfit = Math.round((itemTotal - costPrice) * 100) / 100;
+        return [
+          ...prev,
+          {
+            productId: product.id!,
+            productName: `${product.name} (${unitType === 'carton' ? 'كرتونة' : 'حبة'})`,
+            barcode: product.barcode,
+            unit: unitType,
+            isScaleItem: false,
+            quantity: 1,
+            costPrice: costPrice,
+            unitPrice: unitPrice,
             discount: 0,
             total: itemTotal,
             profit: itemProfit,
@@ -307,6 +389,10 @@ export const POSView: React.FC = () => {
       setSearchQuery('');
       return;
     }
+
+    // Product NOT found in database:
+    // Prompt cashier to quickly register it on the spot!
+    openQuickAddProduct(query);
   };
 
   // Update item quantity in cart
@@ -519,6 +605,116 @@ export const POSView: React.FC = () => {
     triggerRefresh();
   };
 
+  // Open Quick Add Product Modal for unknown scanned barcode / query
+  const openQuickAddProduct = (barcodeOrQuery: string) => {
+    const isDigitsOnly = /^\d+$/.test(barcodeOrQuery);
+    setQuickBarcode(isDigitsOnly ? barcodeOrQuery : '');
+    setQuickName(isDigitsOnly ? '' : barcodeOrQuery);
+    setQuickCostPrice(0);
+    setQuickSellingPrice(0);
+    setQuickCategory(categories[0]?.name || 'مواد غذائية عامة وبقوليات');
+    setQuickStockQuantity(10);
+    setQuickIsScale(false);
+    setIsQuickAddModalOpen(true);
+    setTimeout(() => {
+      quickNameInputRef.current?.focus();
+    }, 150);
+  };
+
+  // Save quick product & add directly to active cart
+  const handleSaveQuickProduct = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedName = quickName.trim();
+    if (!trimmedName) {
+      alert('يرجى كتابة اسم المنتج');
+      quickNameInputRef.current?.focus();
+      return;
+    }
+    if (quickSellingPrice <= 0) {
+      alert('يرجى تحديد سعر البيع للزبون');
+      return;
+    }
+
+    const finalBarcode = quickBarcode.trim() || `GEN-${Date.now().toString().slice(-6)}`;
+    const profitMargin =
+      quickCostPrice > 0 ? ((quickSellingPrice - quickCostPrice) / quickCostPrice) * 100 : 0;
+    const resolvedImage = getSmartProductImage(trimmedName, quickCategory);
+
+    const newProdData: Omit<Product, 'id'> = {
+      name: trimmedName,
+      category: quickCategory,
+      barcode: finalBarcode,
+      unit: quickIsScale ? 'kg' : 'piece',
+      stockQuantity: Number(quickStockQuantity) || 1,
+      minStockAlert: 5,
+      costPrice: Number(quickCostPrice) || 0,
+      sellingPrice: Number(quickSellingPrice),
+      profitMargin: Math.round(profitMargin * 10) / 10,
+      isScaleItem: quickIsScale,
+      image: resolvedImage,
+      notes: 'تمت إضافته سريعاً أثناء البيع في الكاشير',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      const newId = await db.products.add(newProdData as Product);
+      const createdProd: Product = { ...newProdData, id: newId };
+
+      if (createdProd.stockQuantity > 0) {
+        await db.stockMovements.add({
+          productId: newId,
+          productName: createdProd.name,
+          type: 'purchase',
+          quantityChange: createdProd.stockQuantity,
+          previousStock: 0,
+          newStock: createdProd.stockQuantity,
+          unit: createdProd.unit,
+          date: new Date().toISOString().split('T')[0],
+          reason: 'رصيد أولي عند الإدخال السريع من الكاشير',
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      setProducts((prev) => [...prev, createdProd]);
+      triggerRefresh();
+      playSuccessSound();
+
+      // Close modal
+      setIsQuickAddModalOpen(false);
+      setSearchQuery('');
+
+      // Add directly to active cart!
+      if (createdProd.isScaleItem) {
+        openScaleModal(createdProd);
+      } else {
+        addPackagedProduct(createdProd);
+        setTimeout(() => {
+          searchInputRef.current?.focus();
+        }, 100);
+      }
+    } catch (err) {
+      console.error('Error saving quick product:', err);
+      alert('حدث خطأ أثناء حفظ المنتج، يرجى المحاولة ثانية');
+    }
+  };
+
+  // Close Quick Add Modal on Escape
+  useEffect(() => {
+    if (!isQuickAddModalOpen) return;
+
+    const handleQuickAddKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setIsQuickAddModalOpen(false);
+        searchInputRef.current?.focus();
+      }
+    };
+
+    window.addEventListener('keydown', handleQuickAddKey);
+    return () => window.removeEventListener('keydown', handleQuickAddKey);
+  }, [isQuickAddModalOpen]);
+
   const selectedCustomer = customers.find((c) => c.id === selectedCustomerId);
 
   return (
@@ -527,53 +723,20 @@ export const POSView: React.FC = () => {
       {/* TOP GIANT GREEN DIGITAL CUSTOMER PRICE DISPLAY (شاشة الزبون الرقمية) */}
       {/* ========================================================================= */}
       <div className="bg-gray-950 border-b-2 border-gray-800 p-2.5 sm:p-3 text-white shadow-lg shrink-0">
-        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2 sm:gap-3">
-          {/* Left / Center: Last Scanned Item Name & Giant Green Digital Selling Price */}
-          <div className="flex-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 bg-black/75 border border-emerald-500/40 rounded-xl px-3.5 py-2 shadow-[inset_0_0_15px_rgba(16,185,129,0.18)]">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="text-[10px] font-bold text-emerald-400 tracking-wider uppercase">
-                  {lastScannedItem ? 'ثمن بيع السلعة الحالية' : 'شاشة الزبون الرقمية 🛒'}
-                </span>
-              </div>
-              <p className="text-xs sm:text-sm md:text-base font-extrabold text-gray-100 truncate mt-0.5">
-                {lastScannedItem ? lastScannedItem.name : 'مرحباً بكم - جاهز لمسح المنتجات'}
-              </p>
-              {lastScannedItem && (
-                <span className="text-[10px] text-gray-400 font-mono">
-                  {lastScannedItem.isScaleItem
-                    ? `وزن: ${formatWeight(lastScannedItem.quantity || 1, 'kg')}`
-                    : `كمية: ${lastScannedItem.quantity || 1} ${lastScannedItem.unit || 'قطعة'}`}
-                </span>
-              )}
-            </div>
-
-            {/* GIANT GREEN NUMERIC DIGITAL PRICE */}
-            <div className="flex flex-col items-end shrink-0 bg-gray-900/90 px-3 py-1 rounded-lg border border-emerald-500/30">
-              <span className="text-[9px] font-bold text-emerald-400/80 uppercase tracking-wider">سعر السلعة</span>
-              <div className="flex items-baseline gap-1">
-                <span className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-black font-mono tracking-widest text-emerald-400 drop-shadow-[0_0_15px_rgba(52,211,153,0.85)] tabular-nums">
-                  {formatCurrency(lastScannedItem ? lastScannedItem.price : 0, '').trim()}
-                </span>
-                <span className="text-emerald-400 font-black text-xs sm:text-sm">{currency}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Right: Total to Pay in Big Digital Green */}
-          <div className="flex items-center justify-between sm:justify-end gap-3 bg-black/85 border border-gray-800 rounded-xl px-3.5 py-2 w-full md:w-auto shrink-0 shadow-inner">
+        <div className="flex items-center justify-center">
+          {/* Right: Total to Pay in Giant Calculator Style */}
+          <div className="flex items-center justify-between sm:justify-center gap-4 bg-black/85 border border-emerald-500/50 rounded-2xl px-6 py-2.5 w-full max-w-xl shrink-0 shadow-[0_0_25px_rgba(16,185,129,0.2)]">
             <div>
-              <span className="text-[9px] font-bold text-gray-400 block uppercase tracking-wider">
-                المجموع ({cart.length} سلع)
+              <span className="text-xs font-bold text-gray-400 block uppercase tracking-wider">
+                إجمالي سلة التسوق ({cart.length} سلع)
               </span>
-              <span className="text-[11px] text-gray-400 font-bold">الإجمالي للدفع</span>
+              <span className="text-sm text-emerald-400 font-black">الإجمالي للدفع 🖩</span>
             </div>
-            <div className="flex items-baseline gap-1 bg-gray-900/90 px-3 py-1 rounded-lg border border-emerald-500/30">
-              <span className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-black font-mono tracking-widest text-emerald-400 drop-shadow-[0_0_15px_rgba(52,211,153,0.85)] tabular-nums">
+            <div className="flex items-baseline gap-1.5 bg-gray-900/90 px-4 py-2 rounded-xl border border-emerald-500/40">
+              <span className="text-3xl sm:text-4xl md:text-5xl font-black font-mono tracking-widest text-emerald-400 drop-shadow-[0_0_25px_rgba(52,211,153,0.95)] tabular-nums">
                 {formatCurrency(totalAmount, '').trim()}
               </span>
-              <span className="text-emerald-400 font-black text-xs sm:text-sm">{currency}</span>
+              <span className="text-emerald-400 font-black text-base">{currency}</span>
             </div>
           </div>
         </div>
@@ -595,6 +758,17 @@ export const POSView: React.FC = () => {
               />
               <Barcode className="w-5 h-5 text-gray-400 absolute right-3 top-1/2 -translate-y-1/2" />
             </form>
+
+            {/* Quick Add Product Button */}
+            <button
+              type="button"
+              onClick={() => openQuickAddProduct(searchQuery.trim())}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 text-xs font-bold transition-all shrink-0 active:scale-95 shadow-xs"
+              title="إدخال سريع لمنتج غير مسجل في المحل"
+            >
+              <PackagePlus className="w-4 h-4 text-amber-700" />
+              <span className="hidden sm:inline">+ منتج سريع</span>
+            </button>
 
             {/* Scale Quick Simulator Icon Badge */}
             <div className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-50 border border-blue-200 text-blue-700 text-xs font-bold">
@@ -661,7 +835,13 @@ export const POSView: React.FC = () => {
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       loading="lazy"
                       onError={(e) => {
-                        (e.target as HTMLImageElement).src = generateOfflineProductSvg(product.name, product.category);
+                        const target = e.target as HTMLImageElement;
+                        const smart = getSmartProductImage(product.name, product.category);
+                        if (target.src !== smart) {
+                          target.src = smart;
+                        } else {
+                          target.src = generateOfflineProductSvg(product.name, product.category);
+                        }
                       }}
                     />
 
@@ -1349,7 +1529,301 @@ export const POSView: React.FC = () => {
       )}
 
       {/* ========================================================================= */}
-      {/* 4. RECEIPT PRINT MODAL */}
+      {/* 4. QUICK ADD UNKNOWN PRODUCT MODAL (إدخال سريع لمنتج غير مسجل في المحل) */}
+      {/* ========================================================================= */}
+      {isQuickAddModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <form
+            onSubmit={handleSaveQuickProduct}
+            className="bg-white border border-gray-200 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 flex flex-col"
+          >
+            {/* Header with Alert styling */}
+            <div className="p-4 bg-gradient-to-r from-amber-600 to-amber-500 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+                  <PackagePlus className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black flex items-center gap-1.5">
+                    <span>المنتج غير مسجل في قاعدة البيانات!</span>
+                  </h3>
+                  <p className="text-[11px] text-amber-100 font-medium">
+                    قم بإدخاله الآن ليتم حفظه بالمخزون وإضافته للفاتورة فوراً
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsQuickAddModalOpen(false);
+                  searchInputRef.current?.focus();
+                }}
+                className="p-1 rounded-lg hover:bg-white/20 text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Scanned Barcode Pill Banner */}
+            <div className="px-5 py-2.5 bg-amber-50/80 border-b border-amber-200 flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2 font-mono min-w-0">
+                <Barcode className="w-4 h-4 text-amber-700 shrink-0" />
+                <span className="text-gray-600 font-bold shrink-0">الباركود:</span>
+                <span className="font-extrabold text-amber-900 bg-white px-2 py-0.5 rounded border border-amber-200 truncate">
+                  {quickBarcode || 'بدون باركود (تلقائي)'}
+                </span>
+              </div>
+              <span className="text-[10px] text-amber-800 font-bold bg-amber-200/60 px-2 py-0.5 rounded-full shrink-0">
+                تسجيل سريع ⚡
+              </span>
+            </div>
+
+            {/* Form Fields */}
+            <div className="p-5 space-y-3.5 max-h-[72vh] overflow-y-auto">
+              {/* Product Name */}
+              <div>
+                <label className="text-xs font-bold text-gray-800 mb-1 flex items-center justify-between">
+                  <span>اسم المنتج والسلعة *</span>
+                  <span className="text-[10px] text-blue-600 font-normal">مطلوب</span>
+                </label>
+                <input
+                  ref={quickNameInputRef}
+                  type="text"
+                  required
+                  value={quickName}
+                  onChange={(e) => setQuickName(e.target.value)}
+                  placeholder="مثال: حليب كانديا 1 لتر / بسكويت بيمو..."
+                  className="w-full bg-white border border-gray-300 text-gray-900 font-semibold rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 shadow-xs"
+                />
+              </div>
+
+              {/* Cost Price & Selling Price Row */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* Cost Price */}
+                <div>
+                  <label className="text-xs font-bold text-gray-700 mb-1 flex items-center justify-between">
+                    <span>سعر الشراء (التكلفة)</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowQuickCostPrice(!showQuickCostPrice)}
+                      className="text-gray-400 hover:text-blue-600 p-0.5 rounded transition-colors flex items-center gap-1 text-[10px]"
+                      title={showQuickCostPrice ? 'إخفاء سعر الشراء' : 'إظهار سعر الشراء'}
+                    >
+                      {showQuickCostPrice ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      <span>{showQuickCostPrice ? 'إخفاء' : 'إظهار'}</span>
+                    </button>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showQuickCostPrice ? 'number' : 'password'}
+                      min="0"
+                      step="any"
+                      value={quickCostPrice || ''}
+                      onChange={(e) => setQuickCostPrice(Number(e.target.value) || 0)}
+                      placeholder={showQuickCostPrice ? '0' : '••••••'}
+                      className="w-full bg-white border border-gray-300 text-gray-900 font-mono font-bold rounded-lg pr-3 pl-8 py-2 text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-gray-400">
+                      {currency}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Selling Price */}
+                <div>
+                  <label className="text-xs font-bold text-gray-800 mb-1 flex items-center justify-between">
+                    <span>سعر البيع *</span>
+                    <span className="text-[10px] text-emerald-600 font-bold">للزبون</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      step="any"
+                      value={quickSellingPrice || ''}
+                      onChange={(e) => setQuickSellingPrice(Number(e.target.value) || 0)}
+                      placeholder="0"
+                      className="w-full bg-white border-2 border-emerald-500 text-emerald-700 font-mono font-black rounded-lg pr-3 pl-8 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    />
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-emerald-600">
+                      {currency}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Real-time Profit Margin Indicator */}
+              {quickSellingPrice > 0 && (
+                <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-between text-xs animate-in fade-in">
+                  <span className="text-emerald-800 font-semibold">هامش الربح في القطعة:</span>
+                  <div className="flex items-center gap-1.5 font-bold font-mono">
+                    <span className="text-emerald-700">
+                      +{formatCurrency(Math.max(0, quickSellingPrice - quickCostPrice), currency)}
+                    </span>
+                    {quickCostPrice > 0 && (
+                      <span className="text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-mono">
+                        +{Math.round(((quickSellingPrice - quickCostPrice) / quickCostPrice) * 100)}%
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Category & Stock Quantity Row */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* Category */}
+                <div>
+                  <label className="text-xs font-bold text-gray-700 mb-1 block">الفئة / القسم:</label>
+                  <select
+                    value={quickCategory}
+                    onChange={(e) => setQuickCategory(e.target.value)}
+                    className="w-full bg-white border border-gray-300 rounded-lg px-2.5 py-2 text-xs font-semibold text-gray-800 focus:outline-none focus:border-blue-500"
+                  >
+                    {categories.map((c) => (
+                      <option key={c.id || c.name} value={c.name}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Stock Quantity */}
+                <div>
+                  <label className="text-xs font-bold text-gray-700 mb-1 block">
+                    الكمية الأولية بالمخزن:
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={quickStockQuantity || ''}
+                    onChange={(e) => setQuickStockQuantity(Number(e.target.value) || 1)}
+                    placeholder="10"
+                    className="w-full bg-white border border-gray-300 text-gray-900 font-mono font-bold rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              {/* Product Type (Piece vs Scale) */}
+              <div className="pt-1">
+                <label className="text-xs font-bold text-gray-700 mb-1.5 block">طريقة البيع:</label>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setQuickIsScale(false)}
+                    className={`py-2 px-3 rounded-lg border text-center font-bold transition-all ${
+                      !quickIsScale
+                        ? 'bg-blue-600 border-blue-600 text-white shadow-xs'
+                        : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    📦 بالقطعة / علبة
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuickIsScale(true)}
+                    className={`py-2 px-3 rounded-lg border text-center font-bold transition-all ${
+                      quickIsScale
+                        ? 'bg-blue-600 border-blue-600 text-white shadow-xs'
+                        : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    ⚖️ بالميزان (كغ)
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="p-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsQuickAddModalOpen(false);
+                  searchInputRef.current?.focus();
+                }}
+                className="px-4 py-2.5 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold transition-colors"
+              >
+                إلغاء (Esc)
+              </button>
+
+              <button
+                type="submit"
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold shadow-sm transition-all active:scale-95"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>حفظ وإضافة للسلة مباشرة (Enter ↵)</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 5. MULTI-UNIT SELECTION MODAL (بيع بالكرتونة أو بالحبة) */}
+      {/* ========================================================================= */}
+      {multiUnitProduct && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white border border-gray-200 rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 text-right">
+            <div className="p-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
+                  <Package className="w-4 h-4 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black">اختر وحدة البيع المطلوبة</h3>
+                  <p className="text-[11px] text-blue-100 truncate max-w-[200px]">{multiUnitProduct.name}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMultiUnitProduct(null)}
+                className="p-1 rounded-lg hover:bg-white/20 text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3">
+              <button
+                type="button"
+                onClick={() => {
+                  addProductWithUnit(multiUnitProduct, 'carton', multiUnitProduct.sellingPrice, multiUnitProduct.costPrice);
+                  setMultiUnitProduct(null);
+                }}
+                className="w-full p-4 rounded-xl border-2 border-blue-500 bg-blue-50/50 hover:bg-blue-100 flex items-center justify-between transition-all active:scale-95 group text-right"
+              >
+                <div>
+                  <span className="block text-sm font-black text-blue-900">🛒 بيع بالكرتونة / الطبق الكامل</span>
+                  <span className="text-[11px] text-gray-600 font-mono">السعر الإجمالي: {formatCurrency(multiUnitProduct.sellingPrice, currency)}</span>
+                </div>
+                <span className="text-xs font-bold text-blue-600 bg-white px-2.5 py-1 rounded-lg border border-blue-200 shadow-2xs">اختر كرتونة</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const divFactor = multiUnitProduct.boxSize || (multiUnitProduct.name.includes('بيضة') ? 30 : multiUnitProduct.name.includes('10') ? 10 : 6);
+                  const unitSell = multiUnitProduct.pieceSellingPrice || Math.round((multiUnitProduct.sellingPrice / divFactor) * 100) / 100;
+                  const unitCost = multiUnitProduct.pieceCostPrice || Math.round((multiUnitProduct.costPrice / divFactor) * 100) / 100;
+                  addProductWithUnit(multiUnitProduct, 'piece', unitSell, unitCost);
+                  setMultiUnitProduct(null);
+                }}
+                className="w-full p-4 rounded-xl border-2 border-emerald-500 bg-emerald-50/50 hover:bg-emerald-100 flex items-center justify-between transition-all active:scale-95 group text-right"
+              >
+                <div>
+                  <span className="block text-sm font-black text-emerald-900">🥚 بيع بالحبة / الوحدة المفردة</span>
+                  <span className="text-[11px] text-gray-600 font-mono">سعر الحبة: {formatCurrency(multiUnitProduct.pieceSellingPrice || Math.round((multiUnitProduct.sellingPrice / (multiUnitProduct.boxSize || 30)) * 100) / 100, currency)}</span>
+                </div>
+                <span className="text-xs font-bold text-emerald-600 bg-white px-2.5 py-1 rounded-lg border border-emerald-200 shadow-2xs">اختر حبة</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 6. RECEIPT PRINT MODAL */}
       {/* ========================================================================= */}
       <ReceiptModal
         sale={completedSale}

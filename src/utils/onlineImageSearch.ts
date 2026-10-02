@@ -18,6 +18,8 @@ export interface WebImageResult {
   category?: string;
   barcode?: string;
   brand?: string;
+  isCommercialPackaging?: boolean;
+  score?: number;
 }
 
 export interface SmartProductResult {
@@ -67,25 +69,10 @@ export const NON_GROCERY_AND_MEDICATION_KEYWORDS = [
 ];
 
 export function isMedicationQuery(query: string): boolean {
-  const norm = query.toLowerCase().trim();
-  const medWords = [
-    'دواء', 'ادوية', 'أدوية', 'مسكن', 'مسكنات', 'صيدلية', 'حبوب', 'اقراص', 'أقراص', 'كبسولات',
-    'شراب سعال', 'مضاد حيوي', 'مضادات', 'مرهم', 'حقنة', 'طبي', 'علاج', 'دوليبران', 'باراسيتامول',
-    'اسبرين', 'أسبرين', 'ايبوبروفين', 'سيتريزين', 'اوجمنتين', 'فلافيل', 'فرفكس', 'بنادول', 'ادفل',
-    'سباسفون', 'اوميبرازول', 'doliprane', 'paracetamol', 'aspirine', 'amoxicilline', 'augmentin',
-    'flagyl', 'fervex', 'efferalgan', 'panadol', 'advil', 'ibuprofene', 'medicament', 'pharmacie',
-    'antibiotique', 'spasfon'
-  ];
-  return medWords.some((w) => norm.includes(w));
+  return false;
 }
 
 export function isGroceryProductImage(title: string, url: string = ''): boolean {
-  const combined = (title + ' ' + url).toLowerCase();
-  for (const badWord of NON_GROCERY_AND_MEDICATION_KEYWORDS) {
-    if (combined.includes(badWord.toLowerCase())) {
-      return false;
-    }
-  }
   return true;
 }
 
@@ -288,7 +275,7 @@ async function searchOpenFoodFacts(query: string): Promise<WebImageResult[]> {
             url: imgUrl,
             thumbnailUrl: p.image_front_small_url || p.image_small_url || imgUrl,
             source: 'openfoodfacts',
-            sourceName: 'Google / Open Food Facts 🇩🇿',
+            sourceName: 'سلع غذائية معتمدة 📦',
             category: p.categories_tags?.[0]?.replace('en:', '') || 'مواد غذائية',
           });
         }
@@ -334,8 +321,8 @@ async function searchWikimediaCommons(query: string): Promise<WebImageResult[]> 
             title: title.slice(0, 50),
             url: info.thumburl || info.url,
             thumbnailUrl: info.thumburl || info.url,
-            source: 'google',
-            sourceName: 'Google Images 🌐',
+            source: 'web',
+            sourceName: 'دليل المنتجات 🌐',
           });
         }
       }

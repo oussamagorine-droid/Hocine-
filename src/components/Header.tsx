@@ -98,7 +98,7 @@ export const Header: React.FC = () => {
       case 'reports':
         return 'التقارير الشاملة والجداول';
       case 'users':
-        return 'المستخدمون والصلاحيات';
+        return 'المستخدمون والصلاحيات وتخصيص شاشات العامل';
       case 'settings':
         return 'إعدادات المتجر والنسخ الاحتياطي';
       default:

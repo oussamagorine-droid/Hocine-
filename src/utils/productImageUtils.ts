@@ -1,5 +1,47 @@
 /**
- * Utility for intelligent grocery product image recognition & generation.
+ * Downloads an external HTTP/HTTPS image URL and converts it into a Base64 Data URI string
+ * so it is stored 100% locally in the database and included offline in JSON backups.
+ */
+export async function ensureImageAsBase64(imageUrl: string): Promise<string> {
+  if (!imageUrl || imageUrl.startsWith('data:image/')) {
+    return imageUrl;
+  }
+
+  if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+    try {
+      // 1. Try local proxy endpoint first (avoids CORS issues)
+      const proxyRes = await fetch(`/api/proxy-image?url=${encodeURIComponent(imageUrl)}`);
+      if (proxyRes.ok) {
+        const json = await proxyRes.json();
+        if (json.dataUri) {
+          return json.dataUri;
+        }
+      }
+    } catch (e) {
+      console.warn('Proxy image convert warning:', e);
+    }
+
+    try {
+      // 2. Fallback to direct client fetch
+      const res = await fetch(imageUrl, { mode: 'cors' });
+      if (res.ok) {
+        const blob = await res.blob();
+        return await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve((reader.result as string) || imageUrl);
+          reader.onerror = () => resolve(imageUrl);
+          reader.readAsDataURL(blob);
+        });
+      }
+    } catch (err) {
+      console.warn('Direct image convert warning:', err);
+    }
+  }
+
+  return imageUrl;
+}
+
+/**
  * Matches keywords in Arabic, French, and English (e.g. "إفري 1 لتر" -> Water bottle, "كوكاكولا" -> Soda, "حليب كانديا" -> Milk, etc.)
  * Provides high-quality images with instant offline SVG vector fallback and interactive suggestion selection.
  */

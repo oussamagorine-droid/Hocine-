@@ -26,8 +26,8 @@ import {
   Lock,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { exportDatabaseBackup, importDatabaseBackup, resetDatabaseToSeed, clearDatabaseForNewStore, db } from '../db/db';
-import { exportCompleteStoreToExcel } from '../utils/excelUtils';
+import { exportDatabaseBackup, importDatabaseBackup, resetDatabaseToSeed, clearDatabaseForNewStore, importExcelDatabase, db } from '../db/db';
+import { exportCompleteStoreToExcel, parseExcelFile } from '../utils/excelUtils';
 import { StoreSettings } from '../types';
 import { AppUpdateManager } from './AppUpdateManager';
 
@@ -38,6 +38,9 @@ export const SettingsView: React.FC = () => {
   const [isSavedAlert, setIsSavedAlert] = useState<boolean>(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState<'profile' | 'update' | 'backup' | 'desktop'>('profile');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const excelFileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingExcelFile, setPendingExcelFile] = useState<File | null>(null);
+  const [isExcelImportModalOpen, setIsExcelImportModalOpen] = useState<boolean>(false);
 
   // In-app Modal & Feedback state (replaces native window.confirm/alert which get blocked in iframes)
   const [activeModal, setActiveModal] = useState<'clear' | 'reset' | 'import' | null>(null);
@@ -152,24 +155,62 @@ export const SettingsView: React.FC = () => {
   // Export full store to Excel
   const handleExportExcelStore = async () => {
     try {
-      const [products, sales, customers, suppliers] = await Promise.all([
+      const [products, sales, customers, suppliers, purchases, expenses, categories] = await Promise.all([
         db.products.toArray(),
         db.sales.toArray(),
         db.customers.toArray(),
         db.suppliers.toArray(),
+        db.purchases.toArray(),
+        db.expenses.toArray(),
+        db.categories.toArray(),
       ]);
-      exportCompleteStoreToExcel(products, sales, customers, suppliers);
+      exportCompleteStoreToExcel(products, sales, customers, suppliers, purchases, expenses, categories);
       playSuccessSound();
       setFeedbackAlert({
         type: 'success',
-        message: 'تم تصدير ملف Excel الشامل بنجاح!',
+        message: 'تم تصدير قاعدة بيانات البرنامج بالكامل (المنتجات، المبيعات، الكريدي، الأرباح، المصروفات والمشتريات) إلى ملف Excel بنجاح!',
       });
     } catch (err) {
       console.error(err);
       setFeedbackAlert({
         type: 'error',
-        message: 'حدث خطأ أثناء تصدير ملف Excel',
+        message: 'حدث خطأ أثناء تصدير قاعدة البيانات إلى Excel',
       });
+    }
+  };
+
+  const handleExcelFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPendingExcelFile(file);
+    setIsExcelImportModalOpen(true);
+    if (excelFileInputRef.current) {
+      excelFileInputRef.current.value = '';
+    }
+  };
+
+  const executeExcelImport = async () => {
+    if (!pendingExcelFile) return;
+    setIsProcessingAction(true);
+    try {
+      const { sheetsData } = await parseExcelFile(pendingExcelFile);
+      await importExcelDatabase(sheetsData);
+      playSuccessSound();
+      triggerRefresh();
+      setIsExcelImportModalOpen(false);
+      setPendingExcelFile(null);
+      setFeedbackAlert({
+        type: 'success',
+        message: 'تم استعادة واستيراد قاعدة البيانات بالكامل من ملف Excel وتحديث كافة الجداول بنجاح!',
+      });
+    } catch (err) {
+      console.error('Error importing excel database:', err);
+      setFeedbackAlert({
+        type: 'error',
+        message: 'ملف Excel غير صالح أو لا يحتوي على الجداول المطلوبة لاستعادة القاعدة',
+      });
+    } finally {
+      setIsProcessingAction(false);
     }
   };
 
@@ -588,10 +629,27 @@ export const SettingsView: React.FC = () => {
               <button
                 type="button"
                 onClick={handleExportExcelStore}
-                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold shadow-xs transition-all active:scale-95 text-xs"
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold shadow-xs transition-all active:scale-95 text-xs"
               >
                 <FileSpreadsheet className="w-4 h-4" />
-                <span>تصدير قاعدة بيانات المتجر إلى ملف Excel (.xlsx)</span>
+                <span>تصدير قاعدة بيانات البرنامج بالكامل (كل شيء: المنتجات، الكريدي، الأرباح، المبيعات) إلى ملف Excel (.xlsx)</span>
+              </button>
+
+              <input
+                type="file"
+                ref={excelFileInputRef}
+                onChange={handleExcelFileChange}
+                accept=".xlsx, .xls"
+                className="hidden"
+              />
+
+              <button
+                type="button"
+                onClick={() => excelFileInputRef.current?.click()}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold transition-all active:scale-95 shadow-2xs text-xs"
+              >
+                <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                <span>استرجاع واستيراد قاعدة البيانات بالكامل من ملف Excel (.xlsx)</span>
               </button>
 
               <input
@@ -848,6 +906,66 @@ export const SettingsView: React.FC = () => {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Excel Import Modal */}
+      {isExcelImportModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-gray-200 space-y-4 animate-in zoom-in-95 duration-200 text-right">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
+                <FileSpreadsheet className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-900">
+                  استعادة قاعدة البيانات من ملف Excel
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  الملف المختار: <span className="font-mono text-emerald-600 font-bold">{pendingExcelFile?.name}</span>
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 space-y-1.5">
+              <p className="font-bold text-emerald-800">تنبيه هام جداً:</p>
+              <p className="leading-relaxed">
+                استعادة قاعدة البيانات من ملف Excel سيقوم بتحديث واستبدال المنتجات، المبيعات، الكريدي، الأرباح، والديون بالبيانات الموجودة في ملف Excel المختار.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isProcessingAction}
+                onClick={() => {
+                  setIsExcelImportModalOpen(false);
+                  setPendingExcelFile(null);
+                }}
+                className="px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs transition-colors"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={isProcessingAction}
+                onClick={executeExcelImport}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-all active:scale-95 shadow-sm disabled:opacity-50"
+              >
+                {isProcessingAction ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>جارٍ استيراد قاعدة البيانات...</span>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-4 h-4" />
+                    <span>نعم، استعادة القاعدة من Excel</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

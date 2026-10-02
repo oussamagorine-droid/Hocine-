@@ -17,9 +17,10 @@ import {
   Settings,
   Lock,
   Boxes,
-  FileSpreadsheet,
 } from 'lucide-react';
 import { NavigationTab, useApp } from '../context/AppContext';
+
+import { AppUser, UserPermissions } from '../types';
 
 interface NavItem {
   id: NavigationTab;
@@ -27,7 +28,7 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
   badge?: number;
   shortcut?: string;
-  permissionKey?: 'canViewProfits' | 'canManageProducts' | 'canManagePurchases' | 'canManageExpenses' | 'canManageUsers' | 'canManageSettings';
+  permissionKey?: keyof UserPermissions;
 }
 
 export const Sidebar: React.FC = () => {
@@ -41,30 +42,27 @@ export const Sidebar: React.FC = () => {
       label: 'نقطة البيع والكاشير POS',
       icon: ShoppingCart,
       shortcut: 'F1',
+      permissionKey: 'canAccessPos',
     },
     {
       id: 'dashboard',
       label: 'لوحة التحكم والإحصائيات',
       icon: LayoutDashboard,
       shortcut: 'F2',
+      permissionKey: 'canAccessDashboard',
     },
     {
       id: 'scale',
       label: 'البيع بالميزان والأوزان',
       icon: Scale,
       shortcut: 'F3',
+      permissionKey: 'canAccessScale',
     },
     {
       id: 'products',
       label: 'المنتجات والمخزون',
       icon: Package,
       shortcut: 'F4',
-      permissionKey: 'canManageProducts',
-    },
-    {
-      id: 'excel',
-      label: 'تكامل وقاعدة Excel',
-      icon: FileSpreadsheet,
       permissionKey: 'canManageProducts',
     },
     {
@@ -79,18 +77,21 @@ export const Sidebar: React.FC = () => {
       label: 'الديون والكريدي',
       icon: CreditCard,
       shortcut: 'F6',
+      permissionKey: 'canAccessDebts',
     },
     {
       id: 'customers',
       label: 'سجل الزبائن',
       icon: Users,
       shortcut: 'F7',
+      permissionKey: 'canAccessCustomers',
     },
     {
       id: 'suppliers',
       label: 'سجل الموردين',
       icon: Building2,
       shortcut: 'F8',
+      permissionKey: 'canAccessSuppliers',
     },
     {
       id: 'expenses',
@@ -111,16 +112,19 @@ export const Sidebar: React.FC = () => {
       label: 'المنتجات الراكدة والصلاحية',
       icon: AlertTriangle,
       badge: totalAlertsCount > 0 ? totalAlertsCount : undefined,
+      permissionKey: 'canAccessStagnantExpiry',
     },
     {
       id: 'invoices',
       label: 'أرشيف الفواتير والمبيعات',
       icon: FileText,
+      permissionKey: 'canAccessInvoices',
     },
     {
       id: 'reports',
       label: 'التقارير الشاملة',
       icon: BarChart3,
+      permissionKey: 'canAccessReports',
     },
     {
       id: 'users',

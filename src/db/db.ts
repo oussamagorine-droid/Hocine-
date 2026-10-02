@@ -24,6 +24,7 @@ import {
   initialUsers,
 } from './seedData';
 import { generateInvoiceNumber } from '../utils/formatters';
+import { getSmartProductImage, ensureImageAsBase64 } from '../utils/productImageUtils';
 
 export class GroceryDatabase extends Dexie {
   products!: Table<Product, number>;
@@ -466,9 +467,22 @@ export async function recordDebtPayment(
   }
 }
 
-// Export Complete Database as JSON
+// Export Complete Database as JSON with full offline Base64 product image embedding
 export async function exportDatabaseBackup(): Promise<string> {
-  const products = await db.products.toArray();
+  const rawProducts = await db.products.toArray();
+
+  // Convert any external remote image URLs to offline Base64 data URIs
+  const products = await Promise.all(
+    rawProducts.map(async (p) => {
+      const rawImg = p.image || getSmartProductImage(p.name, p.category);
+      const base64Img = await ensureImageAsBase64(rawImg);
+      return {
+        ...p,
+        image: base64Img,
+      };
+    })
+  );
+
   const categories = await db.categories.toArray();
   const sales = await db.sales.toArray();
   const purchases = await db.purchases.toArray();
@@ -540,8 +554,14 @@ export async function importDatabaseBackup(jsonString: string): Promise<boolean>
       await db.users.clear();
       await db.settings.clear();
 
-      // Bulk restore using bulkPut for resilience
-      if (data.tables.products?.length) await db.products.bulkPut(data.tables.products);
+      // Bulk restore using bulkPut for resilience with guaranteed image preservation
+      if (data.tables.products?.length) {
+        const restoredProducts = data.tables.products.map((p: any) => ({
+          ...p,
+          image: p.image || getSmartProductImage(p.name || '', p.category || ''),
+        }));
+        await db.products.bulkPut(restoredProducts);
+      }
       if (data.tables.categories?.length) await db.categories.bulkPut(data.tables.categories);
       if (data.tables.sales?.length) await db.sales.bulkPut(data.tables.sales);
       if (data.tables.purchases?.length) await db.purchases.bulkPut(data.tables.purchases);
@@ -617,6 +637,157 @@ export async function clearDatabaseForNewStore(): Promise<void> {
     } catch (e) {
       console.warn('Error clearing table for new store:', e);
     }
+  }
+}
+
+// Restore Database from Excel sheets data
+export async function importExcelDatabase(sheetsData: Record<string, any[]>): Promise<boolean> {
+  try {
+    await db.transaction('rw', [
+      db.products,
+      db.categories,
+      db.sales,
+      db.purchases,
+      db.customers,
+      db.suppliers,
+      db.expenses,
+    ], async () => {
+      await db.products.clear();
+      await db.categories.clear();
+      await db.sales.clear();
+      await db.purchases.clear();
+      await db.customers.clear();
+      await db.suppliers.clear();
+      await db.expenses.clear();
+
+      // 1. Products
+      const productsSheet = sheetsData['المنتجات والمخزون'] || sheetsData['المنتجات'] || [];
+      const mappedProducts = productsSheet.map((row, idx) => ({
+        id: Number(row['معرف المنتج']) || idx + 1,
+        name: String(row['اسم المنتج'] || 'منتج بدون اسم'),
+        barcode: String(row['الباركود'] || `GEN-${Date.now()}-${idx}`),
+        category: String(row['التصنيف'] || 'مواد غذائية عامة'),
+        unit: String(row['الوحدة'] || 'piece'),
+        costPrice: Number(row['سعر الشراء'] || 0),
+        sellingPrice: Number(row['سعر البيع'] || 0),
+        profitMargin: Number(row['هامش الربح (%)'] || 15),
+        stockQuantity: Number(row['الكمية في المخزن'] || 10),
+        minStockAlert: 5,
+        expiryDate: String(row['تاريخ الصلاحية'] || ''),
+        isScaleItem: String(row['نوع السلعة'] || '').includes('ميزان'),
+        image: String(row['رابط صورة المنتج'] || row['رابط الصورة'] || row['الصورة'] || getSmartProductImage(String(row['اسم المنتج'] || ''), String(row['التصنيف'] || ''))),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }));
+      if (mappedProducts.length > 0) {
+        await db.products.bulkPut(mappedProducts as any);
+      }
+
+      // 2. Sales
+      const salesSheet = sheetsData['أرشيف المبيعات والأرباح'] || sheetsData['أرشيف المبيعات'] || [];
+      const mappedSales = salesSheet.map((row, idx) => ({
+        id: Number(row['معرف الفاتورة']) || idx + 1,
+        invoiceNumber: String(row['رقم الفاتورة'] || `INV-${idx + 1}`),
+        date: String(row['التاريخ'] || new Date().toISOString().split('T')[0]),
+        time: String(row['الوقت'] || '12:00:00'),
+        createdAt: new Date().toISOString(),
+        customerName: String(row['اسم الزبون'] || 'زبون عابر'),
+        items: [],
+        subtotal: Number(row['إجمالي الفاتورة'] || 0),
+        discount: 0,
+        tax: 0,
+        totalAmount: Number(row['إجمالي الفاتورة'] || 0),
+        paidAmount: Number(row['المبلغ المدفوع'] || row['إجمالي الفاتورة'] || 0),
+        remainingDebt: Number(row['المتبقي دين'] || 0),
+        paymentMethod: (String(row['طريقة الدفع'] || 'cash') as any),
+        totalCost: 0,
+        profit: Number(row['صافي ربح الفاتورة'] || 0),
+        cashierName: String(row['الكاشير'] || 'المدير العام'),
+        status: 'completed' as const,
+      }));
+      if (mappedSales.length > 0) {
+        await db.sales.bulkPut(mappedSales as any);
+      }
+
+      // 3. Customers & Debts (الكريدي)
+      const customersSheet = sheetsData['الزبائن والكريدي والديون'] || sheetsData['ديون وسجل الزبائن'] || [];
+      const mappedCustomers = customersSheet.map((row, idx) => ({
+        id: Number(row['معرف الزبون']) || idx + 1,
+        name: String(row['اسم الزبون'] || 'زبون'),
+        phone: String(row['الهاتف'] || ''),
+        totalDebt: Number(row['إجمالي الدين الحالي'] || 0),
+        totalSpent: Number(row['إجمالي المشتريات'] || 0),
+        notes: String(row['ملاحظات'] || ''),
+        createdAt: new Date().toISOString(),
+      }));
+      if (mappedCustomers.length > 0) {
+        await db.customers.bulkPut(mappedCustomers as any);
+      }
+
+      // 4. Purchases
+      const purchasesSheet = sheetsData['المشتريات والتوريدات'] || sheetsData['المشتريات'] || [];
+      const mappedPurchases = purchasesSheet.map((row, idx) => ({
+        id: Number(row['معرف المشتريات']) || idx + 1,
+        invoiceNumber: String(row['رقم الفاتورة'] || ''),
+        supplierName: String(row['المورد'] || ''),
+        date: String(row['التاريخ'] || new Date().toISOString().split('T')[0]),
+        items: [],
+        totalAmount: Number(row['إجمالي التوريد'] || 0),
+        paidAmount: Number(row['المبلغ المدفوع'] || 0),
+        remainingDebt: 0,
+        notes: String(row['ملاحظات'] || ''),
+        createdAt: new Date().toISOString(),
+      }));
+      if (mappedPurchases.length > 0) {
+        await db.purchases.bulkPut(mappedPurchases as any);
+      }
+
+      // 5. Expenses
+      const expensesSheet = sheetsData['المصروفات اليومية'] || sheetsData['المصروفات'] || [];
+      const mappedExpenses = expensesSheet.map((row, idx) => ({
+        id: Number(row['معرف المصروف']) || idx + 1,
+        title: String(row['عنوان المصروف'] || 'مصروف عام'),
+        amount: Number(row['المبلغ'] || 0),
+        date: String(row['التاريخ'] || new Date().toISOString().split('T')[0]),
+        category: String(row['التصنيف'] || 'مصاريف تشغيلية'),
+        notes: String(row['ملاحظات'] || ''),
+        createdAt: new Date().toISOString(),
+      }));
+      if (mappedExpenses.length > 0) {
+        await db.expenses.bulkPut(mappedExpenses as any);
+      }
+
+      // 6. Suppliers
+      const suppliersSheet = sheetsData['سجل الموردين'] || sheetsData['الموردين'] || [];
+      const mappedSuppliers = suppliersSheet.map((row, idx) => ({
+        id: Number(row['معرف المورد']) || idx + 1,
+        name: String(row['اسم المورد'] || 'مورد'),
+        company: String(row['الشركة / النشاط'] || ''),
+        phone: String(row['الهاتف'] || ''),
+        totalDebt: Number(row['مستحقات المورد (ديون علينا)'] || 0),
+        totalPurchases: Number(row['إجمالي التوريدات'] || 0),
+        createdAt: new Date().toISOString(),
+      }));
+      if (mappedSuppliers.length > 0) {
+        await db.suppliers.bulkPut(mappedSuppliers as any);
+      }
+
+      // 7. Categories
+      const categoriesSheet = sheetsData['التصنيفات'] || [];
+      const mappedCategories = categoriesSheet.map((row, idx) => ({
+        id: idx + 1,
+        name: String(row['اسم التصنيف'] || 'عام'),
+        createdAt: new Date().toISOString(),
+      }));
+      if (mappedCategories.length > 0) {
+        await db.categories.bulkPut(mappedCategories as any);
+      }
+    });
+
+    return true;
+  } catch (err) {
+    console.error('Failed to import Excel database:', err);
+    throw err;
   }
 }
 

@@ -155,18 +155,169 @@ export function isGroceryRelated(title: string, url: string = ''): boolean {
   return true;
 }
 
-// 1. Google / DuckDuckGo Live Search targeted at Algerian Supermarket & Food items
-async function searchLiveWebImages(query: string, algerianContext: boolean = true) {
+// Commercial packaging indicator keywords in Arabic, French, and English
+const COMMERCIAL_PACKAGING_KEYWORDS = [
+  'pack', 'package', 'packaging', 'boite', 'bouteille', 'brique', 'sachet', 'canette',
+  'flacon', 'pot', 'emballage', 'produit', 'superette', 'epicerie', 'marche',
+  'عبوة', 'علبة', 'قارورة', 'قنينة', 'كيس', 'باكي', 'حزمة', 'منتج', 'صندوق', 'طبق',
+  'علب', 'قوارير', 'بيدون', 'برطمان', 'قاروره', 'غرام', 'لتر', 'كغ', 'cl', 'ml', 'g', 'kg',
+  'openfoodfacts', 'wikimedia', 'carrefour', 'jumia'
+];
+
+const NON_PACKAGING_KEYWORDS = [
+  'recette', 'recipe', 'plat cuisine', 'restaurant', 'cuisson',
+  'طبخة', 'وصفة', 'مطعم', 'مزرعة', 'حيوان', 'شجرة', 'شجر', 'منزل', 'طبيعة'
+];
+
+export function calculateCommercialPackagingScore(title: string, url: string, rawQuery: string): number {
+  let score = 50;
+  const combined = (title + ' ' + url).toLowerCase();
+  const normQuery = rawQuery.toLowerCase().trim();
+
+  // Query word match (+25 points per word)
+  const queryWords = normQuery.split(' ').filter((w) => w.length > 2);
+  for (const qWord of queryWords) {
+    if (combined.includes(qWord)) {
+      score += 25;
+    }
+  }
+
+  // Commercial Packaging Keywords (+20 points per packaging term)
+  for (const pWord of COMMERCIAL_PACKAGING_KEYWORDS) {
+    if (combined.includes(pWord.toLowerCase())) {
+      score += 20;
+    }
+  }
+
+  // Known trusted product catalog sources (+35 points)
+  if (url.includes('openfoodfacts.org') || url.includes('wikimedia.org') || url.includes('unsplash.com')) {
+    score += 35;
+  }
+
+  // Non-packaging penalty (-40 points)
+  for (const npWord of NON_PACKAGING_KEYWORDS) {
+    if (combined.includes(npWord.toLowerCase())) {
+      score -= 40;
+    }
+  }
+
+  return score;
+}
+
+// Direct Google Images HTML Scraper (gbv=1 returns clean image tags & imgurl params)
+async function searchGoogleImagesDirect(query: string) {
   try {
-    const searchQuery = algerianContext
-      ? `${query} produit alimentation algerie superette`
-      : `${query} grocery supermarket product`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    const res = await fetch(
+      `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=isch&gbv=1`,
+      {
+        signal: controller.signal,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept-Language': 'ar,fr,en;q=0.9',
+        },
+      }
+    );
+    const html = await res.text();
+    clearTimeout(timeoutId);
+
+    const results: any[] = [];
+
+    // Match imgurl= parameters from Google Image links
+    const imgUrlMatches = html.matchAll(/imgurl=([^&"']+)/g);
+    for (const match of imgUrlMatches) {
+      if (match[1]) {
+        try {
+          const decoded = decodeURIComponent(match[1]);
+          if (decoded.startsWith('http') && !decoded.includes('google.com') && !decoded.includes('gstatic.com')) {
+            results.push({
+              id: `g_direct_${results.length}_${Math.random().toString(36).substring(2, 6)}`,
+              title: `${query} - Google Image ${results.length + 1}`,
+              url: decoded,
+              thumbnailUrl: decoded,
+              source: 'google',
+              sourceName: 'Google Images 🌐',
+            });
+          }
+        } catch {}
+      }
+    }
+
+    // Match src="http..." thumbnail images from Google HTML
+    const srcMatches = html.matchAll(/src="([^"]+)"/g);
+    for (const match of srcMatches) {
+      const src = match[1];
+      if (src && src.startsWith('http') && !src.includes('google.com/images') && !src.includes('cleardot.gif') && !src.includes('logo')) {
+        results.push({
+          id: `g_src_${results.length}_${Math.random().toString(36).substring(2, 6)}`,
+          title: `${query} - Google Image ${results.length + 1}`,
+          url: src,
+          thumbnailUrl: src,
+          source: 'google',
+          sourceName: 'Google Images 🌐',
+        });
+      }
+    }
+
+    return results;
+  } catch (err) {
+    return [];
+  }
+}
+
+// Direct Bing / Web Images Scraper for high volume results
+async function searchBingImagesDirect(query: string) {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    const res = await fetch(
+      `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC2`,
+      {
+        signal: controller.signal,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept-Language': 'ar,fr,en;q=0.9',
+        },
+      }
+    );
+    const html = await res.text();
+    clearTimeout(timeoutId);
+
+    const results: any[] = [];
+    const murlMatches = html.matchAll(/murl&quot;:&quot;(https?:\/\/[^&"]+)&quot;/g);
+    for (const match of murlMatches) {
+      if (match[1]) {
+        results.push({
+          id: `bing_${results.length}_${Math.random().toString(36).substring(2, 6)}`,
+          title: `${query} - Google/Web Image ${results.length + 1}`,
+          url: match[1],
+          thumbnailUrl: match[1],
+          source: 'web',
+          sourceName: 'Google Images 🌐',
+        });
+      }
+    }
+    return results;
+  } catch (err) {
+    return [];
+  }
+}
+
+// Direct DuckDuckGo Live Search
+async function searchLiveWebImages(query: string) {
+  try {
+    const searchQuery = query.trim();
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4500);
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
 
     const tokenRes = await fetch(
-      `https://duckduckgo.com/?q=${encodeURIComponent(searchQuery)}&iax=images&ia=images&kl=dz-ar`,
+      `https://duckduckgo.com/?q=${encodeURIComponent(searchQuery)}&iax=images&ia=images`,
       {
         signal: controller.signal,
         headers: {
@@ -185,10 +336,10 @@ async function searchLiveWebImages(query: string, algerianContext: boolean = tru
 
     const vqd = vqdMatch[1];
     const searchController = new AbortController();
-    const searchTimeoutId = setTimeout(() => searchController.abort(), 4500);
+    const searchTimeoutId = setTimeout(() => searchController.abort(), 6000);
 
     const searchRes = await fetch(
-      `https://duckduckgo.com/i.js?l=dz-ar&o=json&q=${encodeURIComponent(searchQuery)}&vqd=${vqd}&f=,,,`,
+      `https://duckduckgo.com/i.js?l=wt-wt&o=json&q=${encodeURIComponent(searchQuery)}&vqd=${vqd}&f=,,,`,
       {
         signal: searchController.signal,
         headers: {
@@ -205,15 +356,15 @@ async function searchLiveWebImages(query: string, algerianContext: boolean = tru
     if (!json.results || !Array.isArray(json.results)) return [];
 
     return json.results
-      .filter((r: any) => r.image && isGroceryRelated(r.title || '', r.image || ''))
-      .slice(0, 16)
+      .filter((r: any) => Boolean(r.image))
+      .slice(0, 40)
       .map((r: any, idx: number) => ({
         id: `google_web_${idx}_${Math.random().toString(36).substring(2, 6)}`,
         title: r.title || query,
         url: r.image,
         thumbnailUrl: r.thumbnail || r.image,
         source: 'google',
-        sourceName: 'Google Images 🇩🇿',
+        sourceName: 'Google Images 🌐',
       }));
   } catch (err) {
     return [];
@@ -314,7 +465,7 @@ async function searchWikimediaGrocery(query: string) {
 async function getBestProductImage(query: string): Promise<{ imageUrl: string; alternativeImages: string[] }> {
   try {
     const [liveImages, offImages] = await Promise.all([
-      searchLiveWebImages(query, true),
+      searchLiveWebImages(query),
       searchOpenFoodFactsAlgeria(query),
     ]);
 
@@ -734,8 +885,8 @@ Output ONLY raw valid JSON array, nothing else.`;
             );
           }
         }
-      } catch (geminiErr) {
-        console.warn('Gemini Google Search Grounding fallback:', geminiErr);
+      } catch (geminiErr: any) {
+        // Silently handle 429 quota limits or rate limit errors and use local catalog fallback
       }
     }
 
@@ -826,42 +977,21 @@ Output ONLY raw valid JSON array, nothing else.`;
   }
 });
 
-// API Route: Smart Live Internet Image Search for Algerian Superettes
+// API Route: Direct Unfiltered Multi-Engine Google / Web Image Search
 app.get('/api/search-images', async (req, res) => {
   const query = (req.query.q as string || '').trim();
   if (!query) {
     return res.json({ results: [] });
   }
 
-  // Medication filter on image search
-  if (isMedication(query)) {
-    return res.json({ query, count: 0, results: [] });
-  }
-
   try {
-    // Find Algerian grocery expansions for exact brand matching
-    let extraQueries: string[] = [];
-    const lowerQuery = query.toLowerCase();
-    for (const [key, expansions] of Object.entries(ALGERIAN_GROCERY_EXPANSIONS)) {
-      if (lowerQuery.includes(key.toLowerCase())) {
-        extraQueries.push(...expansions);
-      }
-    }
-
-    // Run parallel searches with Algeria + Grocery priority
     const searchPromises: Promise<any[]>[] = [
-      searchLiveWebImages(query, true),
+      searchGoogleImagesDirect(query),
+      searchBingImagesDirect(query),
+      searchLiveWebImages(query),
       searchOpenFoodFactsAlgeria(query),
       searchWikimediaGrocery(query),
     ];
-
-    if (extraQueries.length > 0) {
-      searchPromises.push(searchLiveWebImages(extraQueries[0], false));
-      searchPromises.push(searchOpenFoodFactsAlgeria(extraQueries[0]));
-    } else {
-      // General Algerian grocery fallback search query
-      searchPromises.push(searchLiveWebImages(`${query} algerie`, false));
-    }
 
     const allResults = await Promise.allSettled(searchPromises);
 
@@ -871,9 +1001,12 @@ app.get('/api/search-images', async (req, res) => {
     for (const resItem of allResults) {
       if (resItem.status === 'fulfilled' && Array.isArray(resItem.value)) {
         for (const img of resItem.value) {
-          if (img.url && !seenUrls.has(img.url) && isGroceryRelated(img.title, img.url)) {
+          if (img.url && !seenUrls.has(img.url)) {
             seenUrls.add(img.url);
-            combined.push(img);
+            combined.push({
+              ...img,
+              sourceName: img.sourceName || 'Google Images 🌐',
+            });
           }
         }
       }
@@ -887,6 +1020,42 @@ app.get('/api/search-images', async (req, res) => {
   } catch (error) {
     console.error('API /api/search-images error:', error);
     return res.status(500).json({ error: 'Failed to search images', results: [] });
+  }
+});
+
+// API Route: Download and convert internet image URL to Base64 Data URI for offline local DB storage & backups
+app.get('/api/proxy-image', async (req, res) => {
+  const imageUrl = req.query.url as string;
+  if (!imageUrl) return res.status(400).json({ error: 'Missing image URL' });
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch(imageUrl, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+      },
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      return res.status(400).json({ error: 'Failed to fetch image from remote URL' });
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    const base64 = buffer.toString('base64');
+    const dataUri = `data:${contentType};base64,${base64}`;
+
+    return res.json({ dataUri });
+  } catch (err) {
+    console.error('API /api/proxy-image error:', err);
+    return res.status(500).json({ error: 'Proxy image fetch failed' });
   }
 });
 
